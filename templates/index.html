@@ -15,7 +15,175 @@ $('findBtn').onclick=run;$('demoBtn').onclick=()=>{$('poz').value='KGM/15.150/K'
 async function loadPrices(){try{let q=new URLSearchParams({q:$('priceQ').value,kurum:$('priceAgency').value,donem:$('pricePeriod').value,limit:150});let d=await api('/api/prices?'+q);$('priceInfo').textContent=`${d.total} eşleşme • İlk ${d.rows.length} kayıt gösteriliyor`; $('priceRows').innerHTML=d.rows.map(r=>`<tr><td>${escapeHtml(r.kurum)}</td><td>${escapeHtml(r.donem)}</td><td>${escapeHtml(r.poz)}</td><td>${escapeHtml(r.tanim)}</td><td>${escapeHtml(r.birim)}</td><td class="num">${fmt(r.fiyat)}</td></tr>`).join('')}catch(e){notify(e.message,'error')}}$('priceSearch').onclick=loadPrices;
 async function loadRates(){try{let d=await api('/api/rates?donem='+encodeURIComponent($('uploadPeriod').value));$('rateRows').innerHTML=d.rows.slice(0,400).map(r=>`<tr><td>${escapeHtml(r.donem)}</td><td>${escapeHtml(r.poz)}</td><td class="num">${fmt(r.fiyat)}</td><td>${escapeHtml(r.kaynak)}</td></tr>`).join('')}catch(e){notify(e.message,'error')}}$('uploadPeriod').onchange=loadRates;
 $('addRate').onclick=async()=>{try{await api('/api/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({donem:$('uploadPeriod').value,poz:$('ratePoz').value,fiyat:$('ratePrice').value})});notify('Rayiç kaydedildi.','notice ok');loadRates();refresh()}catch(e){notify(e.message,'error')}};
-$('uploadBtn').onclick=async()=>{let f=$('rateFile').files[0];if(!f)return notify('Dosya seçin.','error');let fd=new FormData();fd.append('file',f);fd.append('donem',$('uploadPeriod').value);try{let d=await api('/api/rates/upload',{method:'POST',body:fd});notify(`${d.adet} rayiç satırı okundu. ${d.uyarilar.join(' ')}`,'notice warn');loadRates();refresh()}catch(e){notify(e.message,'error')}};
+
+$('uploadBtn').onclick = async () => {
+  const file = $('rateFile').files[0];
+  if (!file) return notify('Önce dosya seçin.', 'error');
+
+  const btn = $('uploadBtn');
+  btn.disabled = true;
+  btn.textContent = 'Dosya okunuyor...';
+
+  try {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('donem', $('uploadPeriod').value);
+
+      const d = await api('/api/rates/upload', {
+        method: 'POST',
+        body: fd
+      });
+
+      notify(d.adet + ' rayiç kaydedildi.', 'notice ok');
+      await loadRates();
+      await refresh();
+      return;
+    }
+
+    if (!window.pdfjsLib) {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        script.onload = resolve;
+        script.onerror = () => reject(
+          Error('PDF okuma kütüphanesi yüklenemedi.')
+        );
+        document.head.appendChild(script);
+      });
+    }
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    const pdf = await pdfjsLib.getDocument({
+      data: await file.arrayBuffer()
+    }).promise;
+
+    const found = [];
+
+    const codePattern =
+      /(?:^|[^\w/])(10\.\d{3}\.\d{4}|\d{2}\.\d{3}(?:\/[A-Za-z0-9-]+)?)(?=$|[^\w/])/g;
+
+    const pricePattern =
+      /(?<!\d)(\d{1,3}(?:[.\s]\d{3})*,\d{2,4})(?!\d)/g;
+
+    for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
+      btn.textContent =
+        'PDF okunuyor: ' + pageNo + '/' + pdf.numPages;
+
+      const page = await pdf.getPage(pageNo);
+      const content = await page.getTextContent();
+      const lines = new Map();
+
+      for (const item of content.items) {
+        if (!item.str || !item.str.trim()) continue;
+
+        const y = Math.round(item.transform[5] * 2) / 2;
+
+        if (!lines.has(y)) lines.set(y, []);
+
+        lines.get(y).push({
+          x: item.transform[4],
+          text: item.str
+        });
+      }
+
+      for (const [, items] of lines) {
+        const line = items
+          .sort((a, b) => a.x - b.x)
+          .map(item => item.text)
+          .join(' ');
+
+        const codes = [...line.matchAll(codePattern)];
+        const prices = [...line.matchAll(pricePattern)];
+
+        if (codes.length !== 1 || !prices.length) continue;
+
+        const poz = codes[0][1];
+        const raw = prices[prices.length - 1][1];
+
+        const fiyat = Number(
+          raw.replace(/\s/g, '')
+             .replace(/\./g, '')
+             .replace(',', '.')
+        );
+
+        if (Number.isFinite(fiyat) && fiyat >= 0) {
+          found.push({
+            donem: $('uploadPeriod').value,
+            poz,
+            fiyat,
+            kaynak: file.name + ' - Sayfa ' + pageNo
+          });
+        }
+      }
+    }
+
+    if (!found.length) {
+      throw Error('PDF içinden uygun rayiç satırı bulunamadı.');
+    }
+
+    const unique = [...new Map(
+      found.map(row => [row.poz, row])
+    ).values()];
+
+    const preview = unique.slice(0, 10)
+      .map(row => row.poz + ' = ' +
+        row.fiyat.toLocaleString('tr-TR') + ' TL')
+      .join('\n');
+
+    const approved = confirm(
+      unique.length + ' aday rayiç bulundu.\n\n' +
+      'İlk 10 kayıt:\n' + preview +
+      '\n\nDİKKAT: Otomatik okuma hatalı olabilir.' +
+      '\nResmî PDF ile kontrol ettikten sonra OK seçin.' +
+      '\n\nKayıtları kaydetmek istiyor musunuz?'
+    );
+
+    if (!approved) {
+      notify('Aktarım iptal edildi. Kayıt yapılmadı.');
+      return;
+    }
+
+    let total = 0;
+
+    for (let i = 0; i < unique.length; i += 30) {
+      btn.textContent =
+        'Kaydediliyor: ' +
+        Math.min(i + 30, unique.length) +
+        '/' + unique.length;
+
+      const result = await api('/api/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          rows: unique.slice(i, i + 30)
+        })
+      });
+
+      total += result.adet || 0;
+    }
+
+    notify(
+      total + ' rayiç kaydedildi. Fiyatları kontrol edin.',
+      'notice ok'
+    );
+
+    await loadRates();
+    await refresh();
+
+  } catch (error) {
+    notify(error.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Dosyayı işle';
+  }
+};
+
 $('backupBtn').onclick=async()=>{try{let d=await api('/api/export');let blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='rayic_yedek.json';a.click();URL.revokeObjectURL(a.href)}catch(e){notify(e.message,'error')}};
 $('restoreFile').onchange=async e=>{try{let x=JSON.parse(await e.target.files[0].text());let d=await api('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(x)});notify(d.adet+' rayiç geri yüklendi.','notice ok');loadRates();refresh()}catch(e){notify(e.message,'error')}};
 refresh();
