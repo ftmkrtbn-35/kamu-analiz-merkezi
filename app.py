@@ -52,21 +52,68 @@ def fetch(url):
     if len(r.content)>8*1024*1024:raise ValueError('Kaynak boyutu çok büyük.')
     return r
 
+
 def search_web(poz):
-    # Best effort public search, no bypass of login or paywalls.
-    q=quote_plus('"'+poz+'" analiz miktar')
-    urls=[]
-    for base in ('https://www.bing.com/search?q=','https://www.google.com/search?q='):
-        try:
-            r=requests.get(base+q,headers=UA,timeout=9)
-            soup=BeautifulSoup(r.text,'html.parser')
-            for a in soup.select('a[href]'):
-                href=a.get('href','')
-                if href.startswith('/url?q='):href=href.split('/url?q=',1)[1].split('&',1)[0]
-                if allowed(href) and href not in urls:urls.append(href)
-            if urls:break
-        except requests.RequestException:continue
-    return urls[:10]
+    from urllib.parse import urljoin, unquote
+
+    queries = [
+        f'"{poz}" analiz miktar',
+        f'"{poz}" rayiç analiz',
+        f'"{poz}" birim fiyat analizi'
+    ]
+
+    urls = []
+
+    for query in queries:
+        q = quote_plus(query)
+
+        search_urls = [
+            'https://www.google.com/search?q=' + q,
+            'https://www.bing.com/search?q=' + q
+        ]
+
+        for search_url in search_urls:
+            try:
+                response = requests.get(
+                    search_url,
+                    headers=UA,
+                    timeout=10
+                )
+                response.raise_for_status()
+
+                soup = BeautifulSoup(
+                    response.text,
+                    'html.parser'
+                )
+
+                for a in soup.select('a[href]'):
+                    href = a.get('href', '')
+
+                    if href.startswith('/url?'):
+                        from urllib.parse import parse_qs
+                        parsed = urlparse(href)
+                        href = parse_qs(
+                            parsed.query
+                        ).get('q', [''])[0]
+
+                    elif href.startswith('//'):
+                        href = 'https:' + href
+
+                    elif href.startswith('/'):
+                        continue
+
+                    href = unquote(href)
+
+                    if allowed(href) and href not in urls:
+                        urls.append(href)
+
+                if len(urls) >= 8:
+                    return urls[:8]
+
+            except requests.RequestException:
+                continue
+
+    return urls[:8]
 
 def parse_analysis(html_text,poz,url):
     soup=BeautifulSoup(html_text,'html.parser')
