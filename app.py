@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 
 ROOT=os.path.dirname(__file__)
 app=Flask(__name__)
-app.config['MAX_CONTENT_LENGTH']=18*1024*1024
+app.config['MAX_CONTENT_LENGTH']=200*1024*1024
 DATA=json.load(open(os.path.join(ROOT,'data','fiyatlar.json'),encoding='utf-8'))
 # SQLite stores user-entered rates between process restarts. On ephemeral hosting,
 # download a JSON backup; for durable hosting set DATABASE_PATH to a persistent disk.
